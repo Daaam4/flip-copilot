@@ -3,7 +3,12 @@ package com.flipcopilot;
 import java.awt.BorderLayout;
 import java.awt.Color;
 import java.awt.Component;
+import java.awt.Cursor;
 import java.awt.Dimension;
+import java.awt.event.KeyAdapter;
+import java.awt.event.KeyEvent;
+import java.awt.event.MouseAdapter;
+import java.awt.event.MouseEvent;
 import java.time.Instant;
 import java.util.List;
 import javax.swing.BorderFactory;
@@ -17,6 +22,7 @@ import javax.swing.JPanel;
 import javax.swing.JSpinner;
 import javax.swing.SpinnerNumberModel;
 import javax.swing.SwingUtilities;
+import net.runelite.client.ui.components.IconTextField;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.ui.ColorScheme;
 import net.runelite.client.ui.FontManager;
@@ -55,6 +61,11 @@ class FlipCopilotPanel extends PluginPanel
 	private final JCheckBox notifyBox = new JCheckBox("Notify when a clock fires");
 	private final JButton scanButton = new JButton("Scan now");
 
+	private static final int SEARCH_RESULTS = 8;
+
+	private final IconTextField searchField = new IconTextField();
+	private final JPanel resultsPanel = new JPanel();
+	private final JLabel lookupLabel = html("");
 	private final JLabel statusLabel = html("");
 	private final JLabel slotsLabel = html("");
 	private final JLabel positionsLabel = html("");
@@ -103,6 +114,36 @@ class FlipCopilotPanel extends PluginPanel
 			display.add(box(b));
 		}
 		root.add(display);
+
+		// ---- lookup ----
+		JPanel lookup = section("Item lookup");
+		lookup.add(caption("Search an item (or right-click one in-game)"));
+		searchField.setIcon(IconTextField.Icon.SEARCH);
+		searchField.setBackground(ColorScheme.DARKER_GRAY_COLOR);
+		searchField.setHoverBackgroundColor(ColorScheme.DARK_GRAY_HOVER_COLOR);
+		searchField.addKeyListener(new KeyAdapter()
+		{
+			@Override
+			public void keyReleased(KeyEvent e)
+			{
+				renderSearch();
+			}
+		});
+		searchField.addClearListener(() ->
+		{
+			resultsPanel.removeAll();
+			resultsPanel.setVisible(false);
+			revalidate();
+			repaint();
+		});
+		lookup.add(full(searchField, 30));
+		resultsPanel.setLayout(new BoxLayout(resultsPanel, BoxLayout.Y_AXIS));
+		resultsPanel.setBackground(ColorScheme.DARKER_GRAY_COLOR);
+		resultsPanel.setAlignmentX(LEFT_ALIGNMENT);
+		resultsPanel.setVisible(false);
+		lookup.add(resultsPanel);
+		lookup.add(lookupLabel);
+		root.add(lookup);
 
 		// ---- status ----
 		JPanel status = section("Status");
@@ -181,8 +222,10 @@ class FlipCopilotPanel extends PluginPanel
 		final String slots = formatSlots(plugin.getSlotAdvice());
 		final String holding = formatHolding(plugin.tracker() == null ? null : plugin.tracker().positions());
 		final String picks = formatPicks(plugin.getCandidates());
+		final String lookup = formatLookup(plugin.getLookupItemId());
 		SwingUtilities.invokeLater(() ->
 		{
+			lookupLabel.setText(wrap(lookup));
 			statusLabel.setText(wrap(status));
 			slotsLabel.setText(wrap(slots));
 			positionsLabel.setText(wrap(holding));
@@ -190,6 +233,93 @@ class FlipCopilotPanel extends PluginPanel
 			revalidate();
 			repaint();
 		});
+	}
+
+	// ---------------- item lookup ----------------
+
+	private void renderSearch()
+	{
+		List<ItemMeta> hits = plugin.search(searchField.getText(), SEARCH_RESULTS);
+		resultsPanel.removeAll();
+		for (ItemMeta m : hits)
+		{
+			Quote q = plugin.getLatest().get(m.getId());
+			String price = q != null && q.isComplete() ? String.format("%,d / %,d", q.getLow(), q.getHigh()) : "-";
+			JLabel row = new JLabel(wrap("<font color=" + H_TEXT + ">" + esc(m.getName()) + "</font> <font color=" + H_DIM + ">" + price + "</font>"));
+			row.setAlignmentX(LEFT_ALIGNMENT);
+			row.setBorder(BorderFactory.createEmptyBorder(2, 4, 2, 4));
+			row.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+			row.setOpaque(true);
+			row.setBackground(ColorScheme.DARKER_GRAY_COLOR);
+			row.addMouseListener(new MouseAdapter()
+			{
+				@Override
+				public void mouseClicked(MouseEvent e)
+				{
+					plugin.lookup(m.getId());
+				}
+
+				@Override
+				public void mouseEntered(MouseEvent e)
+				{
+					row.setBackground(ColorScheme.DARK_GRAY_HOVER_COLOR);
+				}
+
+				@Override
+				public void mouseExited(MouseEvent e)
+				{
+					row.setBackground(ColorScheme.DARKER_GRAY_COLOR);
+				}
+			});
+			resultsPanel.add(row);
+		}
+		resultsPanel.setVisible(!hits.isEmpty());
+		revalidate();
+		repaint();
+	}
+
+	private String formatLookup(int itemId)
+	{
+		if (itemId <= 0)
+		{
+			return "<font color=" + H_DIM + ">Type a name above, or right-click an item in your inventory / bank and choose Flip lookup.</font>";
+		}
+		ItemMeta meta = plugin.meta(itemId);
+		Quote q = plugin.getLatest().get(itemId);
+		List<ItemReport.Row> rows = ItemReport.lookup(plugin, meta, q, Instant.now().getEpochSecond());
+		StringBuilder sb = new StringBuilder();
+		sb.append("<font color=").append(H_ACCENT).append("><b>").append(esc(meta.getName())).append("</b></font>");
+		for (ItemReport.Row r : rows)
+		{
+			String c = tone(r.getTone());
+			if (r.isNote())
+			{
+				sb.append("<br><font color=").append(c).append(">! ").append(esc(r.getValue())).append("</font>");
+			}
+			else
+			{
+				sb.append("<br><font color=").append(H_DIM).append(">").append(esc(r.getLabel())).append(":</font> <font color=").append(c).append(">")
+					.append(esc(r.getValue())).append("</font>");
+			}
+		}
+		return sb.toString();
+	}
+
+	private static String tone(ItemReport.Tone t)
+	{
+		switch (t)
+		{
+			case GOOD:
+				return H_GOOD;
+			case WARN:
+				return H_ACCENT;
+			case BAD:
+				return H_BAD;
+			case DIM:
+				return H_DIM;
+			default:
+				return H_TEXT;
+		}
 	}
 
 	private String formatStatus()

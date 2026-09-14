@@ -189,7 +189,13 @@ public interface FlipCopilotConfig extends Config
 		return false;
 	}
 
-	@ConfigItem(keyName = "timezone", name = "Time zone", description = "IANA zone for clocks (e.g. Europe/Berlin). Blank = system default", section = DISPLAY, position = 3)
+	@ConfigItem(keyName = "menuLookup", name = "Right-click 'Flip lookup'", description = "Add a Flip lookup option to items in the inventory, bank and GE side panel", section = DISPLAY, position = 3)
+	default boolean menuLookup()
+	{
+		return true;
+	}
+
+	@ConfigItem(keyName = "timezone", name = "Time zone", description = "IANA zone for clocks (e.g. Europe/Berlin). Blank = system default", section = DISPLAY, position = 4)
 	default String timezone()
 	{
 		return "";

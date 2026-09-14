@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledExecutorService;
@@ -17,6 +18,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import javax.inject.Inject;
+import javax.swing.SwingUtilities;
 import lombok.Getter;
 import lombok.Value;
 import lombok.extern.slf4j.Slf4j;
@@ -25,15 +27,19 @@ import net.runelite.api.GameState;
 import net.runelite.api.GrandExchangeOffer;
 import net.runelite.api.GrandExchangeOfferState;
 import net.runelite.api.Item;
+import net.runelite.api.MenuAction;
 import net.runelite.api.ItemContainer;
 import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.GameTick;
 import net.runelite.api.events.GrandExchangeOfferChanged;
 import net.runelite.api.events.ItemContainerChanged;
+import net.runelite.api.events.MenuEntryAdded;
+import net.runelite.api.gameval.InterfaceID;
 import net.runelite.api.gameval.InventoryID;
 import net.runelite.api.gameval.ItemID;
 import net.runelite.api.gameval.VarPlayerID;
 import net.runelite.api.gameval.VarbitID;
+import net.runelite.api.widgets.WidgetUtil;
 import net.runelite.client.Notifier;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.config.ConfigManager;
@@ -110,6 +116,8 @@ public class FlipCopilotPlugin extends Plugin
 	@Getter private volatile long budgetUsed;
 	private final Map<Integer, CachedStats> statsCache = new ConcurrentHashMap<>();
 	private final Map<String, Instant> notified = new HashMap<>();
+	/** Item shown in the sidebar lookup (0 = none). */
+	@Getter private volatile int lookupItemId;
 	/** Coins seen in the inventory (volatile copy so the executor can read it). */
 	private volatile long inventoryCoins = -1;
 	private int tick;
@@ -340,6 +348,7 @@ public class FlipCopilotPlugin extends Plugin
 		{
 			latest = prices.latest();
 			latestAt = Instant.now();
+			refreshPanel();
 		}
 		catch (IOException ex)
 		{
@@ -500,6 +509,88 @@ public class FlipCopilotPlugin extends Plugin
 			}
 		}
 		inventoryCoins = coins;
+	}
+
+	// ---------------- item lookup (search box + right-click) ----------------
+
+	private static final String LOOKUP_OPTION = "Flip lookup";
+
+	@Subscribe
+	public void onMenuEntryAdded(MenuEntryAdded e)
+	{
+		if (!config.menuLookup() || !"Examine".equals(e.getOption()))
+		{
+			return; // one entry per item, hung off its Examine option
+		}
+		int group = WidgetUtil.componentToInterface(e.getActionParam1());
+		if (group != InterfaceID.INVENTORY && group != InterfaceID.BANKMAIN && group != InterfaceID.BANKSIDE && group != InterfaceID.GE_OFFERS_SIDE)
+		{
+			return;
+		}
+		int itemId = e.getItemId();
+		if (itemId <= 0)
+		{
+			return;
+		}
+		final int canonical = itemManager.canonicalize(itemId);
+		if (!catalog.containsKey(canonical))
+		{
+			return; // untradeable / not on the GE
+		}
+		client.getMenu().createMenuEntry(-1)
+			.setOption(LOOKUP_OPTION)
+			.setTarget(e.getTarget())
+			.setType(MenuAction.RUNELITE)
+			.onClick(me -> lookup(canonical));
+	}
+
+	/** Show one item's report in the sidebar and open the panel. Safe from any thread. */
+	void lookup(int itemId)
+	{
+		if (itemId > 0 && !catalog.containsKey(itemId))
+		{
+			return;
+		}
+		lookupItemId = itemId;
+		if (itemId > 0)
+		{
+			statsFor(itemId); // kick off the median-margin fetch
+		}
+		refreshPanel();
+		if (itemId > 0)
+		{
+			SwingUtilities.invokeLater(() -> clientToolbar.openPanel(navButton));
+		}
+	}
+
+	/** Name search over the wiki mapping: prefix matches first, then substring, alphabetical within each. */
+	List<ItemMeta> search(String query, int limit)
+	{
+		String q = query == null ? "" : query.trim().toLowerCase(Locale.ROOT);
+		List<ItemMeta> out = new ArrayList<>();
+		if (q.length() < 2)
+		{
+			return out;
+		}
+		List<ItemMeta> prefix = new ArrayList<>();
+		List<ItemMeta> contains = new ArrayList<>();
+		for (ItemMeta m : catalog.values())
+		{
+			String n = m.getName().toLowerCase(Locale.ROOT);
+			if (n.startsWith(q))
+			{
+				prefix.add(m);
+			}
+			else if (n.contains(q))
+			{
+				contains.add(m);
+			}
+		}
+		prefix.sort(java.util.Comparator.comparing(ItemMeta::getName));
+		contains.sort(java.util.Comparator.comparing(ItemMeta::getName));
+		out.addAll(prefix);
+		out.addAll(contains);
+		return out.size() > limit ? new ArrayList<>(out.subList(0, limit)) : out;
 	}
 
 	// ---------------- helpers for overlays / panel ----------------
